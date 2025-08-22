@@ -149,13 +149,12 @@ class HoleheReq(BaseModel):
 
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,63}$")
 URL_RE = re.compile(r"https?://[^\s<>()\"']+")
-
-ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")  # strip ANSI colors
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")  # strip ANSI escape codes
 
 def parse_holehe(output: str):
     """
-    Keep ONLY positive hits, i.e. lines starting with: [+] <domain> [optional URL]
-    Ignore banners like 'Github : https://github.com/megadose/holehe'
+    Only keep lines starting with [+], which indicate a positive hit.
+    Ignore holehe's own GitHub banner and any [x]/[-] lines.
     """
     found = []
     seen = set()
@@ -163,33 +162,30 @@ def parse_holehe(output: str):
     for raw in output.splitlines():
         line = ANSI_RE.sub("", raw).strip()
 
-        # only positives
         if not line.startswith("[+]"):
             continue
 
-        # examples:
-        # "[+] amazon.com"
-        # "[+] spotify.com https://open.spotify.com/user/foobar"
-        # normalize spacing
-        parts = line[3:].strip().split()  # remove "[+]"
-        if not parts:
+        rest = line[3:].strip()
+        if not rest:
             continue
 
+        parts = rest.split()
         site = parts[0]
-        # very loose domain check
-        if "." not in site or site.endswith(":"):
-            # sometimes line formats vary; skip weird ones
+
+        # skip holehe’s own banner
+        if site.lower() == "github" and "megadose" in rest.lower():
             continue
 
-        # try to find a URL on the same line if present
-        urls = URL_RE.findall(line)
+        # look for URL in the line
+        urls = URL_RE.findall(rest)
         url = urls[0] if urls else f"https://{site}"
 
         key = (site.lower(), url)
         if key in seen:
             continue
         seen.add(key)
-        found.append({"site": site.lstrip("www.").lower(), "url": url})
+
+        found.append({"site": site.lstrip("www."), "url": url})
 
     return found
 
@@ -200,8 +196,9 @@ async def holehe_lookup(req: HoleheReq):
         raise HTTPException(400, "Invalid email format.")
 
     base = ["holehe"] if shutil.which("holehe") else ["python", "-m", "holehe"]
-    # add --no-color to reduce ANSI noise if your holehe supports it
     cmd = [*base, e]
+
+    # run the command (with timeout)
     out = run(cmd, timeout=140)
 
     hits = parse_holehe(out)
