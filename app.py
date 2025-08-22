@@ -1,4 +1,6 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
+from pydantic import BaseModel
+import ipaddress, re, shlex, subprocess
 
 app = FastAPI()
 
@@ -11,10 +13,6 @@ async def my_ip(request: Request):
     # works behind Render’s proxy
     ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.client.host
     return {"ip": ip or "unknown"}
-
-import ipaddress, re, shlex, subprocess
-from fastapi import HTTPException
-from pydantic import BaseModel
 
 # ---- helpers ----
 DOMAIN_RE = re.compile(r"^(?:(?:[a-zA-Z0-9-]{1,63}\.)+[A-Za-z]{2,63})$")
@@ -47,7 +45,12 @@ async def scan_ports(req: ScanReq):
     if not valid_target(t):
         raise HTTPException(400, "Invalid target. Use an IP or domain.")
 
-    flags = ["-Pn", "-F", "-T4"] if req.fast else ["-Pn", "-sV", "-T3"]
+    # Force unprivileged TCP connect scans on Render
+    flags = (
+        ["-Pn", "-F", "-T4", "-sT", "--unprivileged"]
+        if req.fast
+        else ["-Pn", "-sT", "-sV", "-T3", "--unprivileged"]
+    )
     cmd = ["nmap", *flags, t]
     output = run(cmd, timeout=45)
     return {
