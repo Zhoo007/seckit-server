@@ -139,13 +139,50 @@ async def sherlock_lookup(req: SherlockReq):
     return {"command": last_cmd, "output": tail}
 
 # ---------- holehe (email OSINT) ----------
-import shutil, re  # already imported above? keep once.
-from pydantic import BaseModel  # already imported above? keep once.
+import re, shutil, shlex
+from urllib.parse import urlparse
+from pydantic import BaseModel
 
 class HoleheReq(BaseModel):
     email: str
+    # optional: set to false if you ever want raw output back too
+    found_only: bool = True
 
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,63}$")
+URL_RE = re.compile(r"https?://[^\s<>()\"']+")
+
+def parse_holehe(output: str):
+    """
+    Extract URLs that look like positive matches from holehe output.
+    Different holehe versions print tables or lines; we keep it robust:
+    - scrape all http(s) URLs
+    - dedupe
+    - map to site hostnames
+    """
+    urls = []
+    for m in URL_RE.finditer(output):
+        url = m.group(0).rstrip(").,;")  # trim trailing punctuation
+        urls.append(url)
+
+    # dedupe while preserving order
+    seen = set()
+    unique_urls = []
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            unique_urls.append(u)
+
+    found = []
+    for u in unique_urls:
+        try:
+            host = urlparse(u).netloc or u
+        except Exception:
+            host = u
+        # normalize host (strip www.)
+        if host.startswith("www."):
+            host = host[4:]
+        found.append({"site": host, "url": u})
+    return found
 
 @app.post("/holehe")
 async def holehe_lookup(req: HoleheReq):
@@ -155,10 +192,17 @@ async def holehe_lookup(req: HoleheReq):
 
     base = ["holehe"] if shutil.which("holehe") else ["python", "-m", "holehe"]
     cmd = [*base, e]
+    out = run(cmd, timeout=140)  # allow a bit more time
 
-    out = run(cmd, timeout=120)  # reuse your existing run()
+    hits = parse_holehe(out)
+    resp = {
+        "command": " ".join(shlex.quote(c) for c in cmd),
+        "count": len(hits),
+        "found": hits
+    }
+    # keep a short raw tail for debugging if you ever need it
+    if not req.found_only:
+        tail = "\n".join(out.splitlines()[-300:])
+        resp["raw_tail"] = tail
 
-    lines = out.splitlines()
-    tail = "\n".join(lines[-400:]) if len(lines) > 400 else out
-
-    return {"command": " ".join(shlex.quote(c) for c in cmd), "output": tail}
+    return resp
