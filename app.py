@@ -1,9 +1,10 @@
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
-import ipaddress, re, shlex, subprocess
+import ipaddress, re, shlex, subprocess, shutil
 
 app = FastAPI()
 
+# ---------- basic ----------
 @app.get("/health")
 async def health():
     return {"ok": True}
@@ -14,7 +15,7 @@ async def my_ip(request: Request):
     ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.client.host
     return {"ip": ip or "unknown"}
 
-# ---- helpers ----
+# ---------- helpers ----------
 DOMAIN_RE = re.compile(r"^(?:(?:[a-zA-Z0-9-]{1,63}\.)+[A-Za-z]{2,63})$")
 def valid_target(s: str) -> bool:
     s = s.strip()
@@ -33,8 +34,9 @@ def run(cmd: list[str], timeout: int = 45) -> str:
             raise HTTPException(400, err[:400] or "Command error")
         return (out + ("\n" + err if err else "")).strip()
     except subprocess.TimeoutExpired:
-        raise HTTPException(408, "Scan timed out")
+        raise HTTPException(408, "Command timed out")
 
+# ---------- nmap ----------
 class ScanReq(BaseModel):
     target: str
     fast: bool = True
@@ -53,7 +55,32 @@ async def scan_ports(req: ScanReq):
     )
     cmd = ["nmap", *flags, t]
     output = run(cmd, timeout=45)
-    return {
-        "command": " ".join(shlex.quote(c) for c in cmd),
-        "output": output
-    }
+    return {"command": " ".join(shlex.quote(c) for c in cmd), "output": output}
+
+# ---------- sherlock ----------
+class SherlockReq(BaseModel):
+    username: str
+
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
+
+@app.post("/sherlock")
+async def sherlock_lookup(req: SherlockReq):
+    u = req.username.strip()
+    if not USERNAME_RE.fullmatch(u):
+        raise HTTPException(400, "Invalid username. Use 1–32 chars: letters, digits, _ . -")
+
+    # check CLI presence
+    if shutil.which("sherlock") is None:
+        # try python -m as fallback (installed via sherlock-project)
+        cmd = ["python", "-m", "sherlock", u, "--timeout", "8", "--print-found", "--no-color"]
+    else:
+        cmd = ["sherlock", u, "--timeout", "8", "--print-found", "--no-color"]
+
+    # sherlock can be slow → allow longer timeout
+    output = run(cmd, timeout=120)
+
+    # keep payload sane: last 200 lines
+    lines = output.splitlines()
+    tail = "\n".join(lines[-200:]) if len(lines) > 200 else output
+
+    return {"command": " ".join(shlex.quote(c) for c in cmd), "output": tail}
