@@ -137,3 +137,28 @@ async def sherlock_lookup(req: SherlockReq):
     # show the *last* command that ran (or the full one for full mode)
     last_cmd = " ".join(shlex.quote(c) for c in (cmd if not sites else sherlock_cmd(u, sites[-batch_size:], per_site_timeout)))
     return {"command": last_cmd, "output": tail}
+
+# ---------- holehe (email OSINT) ----------
+import shutil, re  # already imported above? keep once.
+from pydantic import BaseModel  # already imported above? keep once.
+
+class HoleheReq(BaseModel):
+    email: str
+
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,63}$")
+
+@app.post("/holehe")
+async def holehe_lookup(req: HoleheReq):
+    e = req.email.strip()
+    if not EMAIL_RE.fullmatch(e):
+        raise HTTPException(400, "Invalid email format.")
+
+    base = ["holehe"] if shutil.which("holehe") else ["python", "-m", "holehe"]
+    cmd = [*base, e]
+
+    out = run(cmd, timeout=120)  # reuse your existing run()
+
+    lines = out.splitlines()
+    tail = "\n".join(lines[-400:]) if len(lines) > 400 else out
+
+    return {"command": " ".join(shlex.quote(c) for c in cmd), "output": tail}
